@@ -4,6 +4,12 @@
 aiocouchdb Replicator API
 =========================
 
+Replicator
+==========
+
+.. autoclass:: aiocouchdb.replicator.replicator.Replicator
+  :members:
+
 Records
 =======
 
@@ -14,5 +20,3 @@ Records
 .. autoclass:: aiocouchdb.replicator.records.ReplicationTask
   :members:
   :special-members:
-
-

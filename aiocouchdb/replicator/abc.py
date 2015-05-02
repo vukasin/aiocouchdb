@@ -7,6 +7,12 @@
 # you should have received as part of this distribution.
 #
 
-# flake8: noqa
-from .records import PeerInfo, ReplicationTask
-from .replicator import Replicator
+import abc
+
+
+class ISourcePeer(object, metaclass=abc.ABCMeta):
+    """Source peer interface."""
+
+
+class ITargetPeer(object, metaclass=abc.ABCMeta):
+    """Target peer interface."""
