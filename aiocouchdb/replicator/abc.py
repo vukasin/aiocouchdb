@@ -13,6 +13,12 @@ import abc
 class ISourcePeer(object, metaclass=abc.ABCMeta):
     """Source peer interface."""
 
+    def __init__(self, peer_info):
+        pass
+
 
 class ITargetPeer(object, metaclass=abc.ABCMeta):
     """Target peer interface."""
+
+    def __init__(self, peer_info):
+        pass

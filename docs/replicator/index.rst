@@ -30,6 +30,15 @@ That's how :class:`~aiocouchdb.replicator.records.ReplicationTask` has been
 created. `couch_replicator` doesn't has a direct analog of this object, thought
 `#rep record`_ contains the base options from it.
 
+Replication Process
+-------------------
+
+Once we'd defined a task about what to do, we need something that will actually
+do what we had defined. The :class:`~aiocouchdb.replicator.ReplicationProcess`
+here comes for the rescue.
+
+`ReplicationProcess` operates with a single task
+
 Replicator API
 ==============
 

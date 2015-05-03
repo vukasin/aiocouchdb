@@ -8,5 +8,7 @@
 #
 
 # flake8: noqa
+from .abc import ISourcePeer, ITargetPeer
 from .records import PeerInfo, ReplicationTask
+from .replication import Replication
 from .replicator import Replicator
