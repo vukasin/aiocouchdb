@@ -47,4 +47,3 @@ Replicator API
 
 
 .. _couch_replicator: https://github.com/apache/couchdb-couch-replicator
-.. _#rep record: https://github.com/apache/couchdb-couch-replicator/blob/master/src/couch_replicator.hrl#L15-L24
