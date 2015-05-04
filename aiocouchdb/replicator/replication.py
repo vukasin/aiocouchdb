@@ -10,6 +10,7 @@
 
 import asyncio
 
+from .abc import ISourcePeer, ITargetPeer
 from .records import ReplicationTask
 
 
@@ -32,4 +33,32 @@ class Replication(object):
     @asyncio.coroutine
     def start(self):
         """Starts a replication."""
+        # couch_replicator:do_init/1
+        # couch_replicator:init_state/1
+        rep_task, source, target = self.rep_task, self.source, self.target
+
+        # we'll need source and target info later
+        source_info, target_info = yield from self.verify_peers(
+            source, target, rep_task.create_target)
+
         raise NotImplementedError
+
+    @asyncio.coroutine
+    def verify_peers(self, source: ISourcePeer, target: ITargetPeer,
+                     create_target: bool=False) -> tuple:
+        """Verifies that source and target databases are exists and accessible.
+
+        If target is not exists (HTTP 404) it may be created in case when
+        :attr:`ReplicationTask.create_target` is set as ``True``.
+
+        Raises :exc:`aiocouchdb.error.HttpErrorException` exception depending
+        from the HTTP error of initial peers requests.
+        """
+        source_info = yield from source.info()
+
+        if not (yield from target.exists()):
+            if create_target:
+                yield from target.create()
+        target_info = yield from target.info()
+
+        return source_info, target_info
