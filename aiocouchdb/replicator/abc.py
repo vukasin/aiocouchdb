@@ -51,6 +51,17 @@ class ISourcePeer(object, metaclass=abc.ABCMeta):
         # We do abstract from knowledge about design documents and the place
         # where filters are defined there.
 
+    @abc.abstractmethod
+    @asyncio.coroutine
+    def get_replication_log(self, docid: str) -> dict:
+        """Returns Replication log document instance by given ID. If document
+        couldn't be found, should return empty dict.
+
+        :param str docid: Replication ID
+
+        :rtype: dict
+        """
+
 
 class ITargetPeer(object, metaclass=abc.ABCMeta):
     """Target peer interface."""
@@ -84,3 +95,14 @@ class ITargetPeer(object, metaclass=abc.ABCMeta):
     @asyncio.coroutine
     def create(self):
         """Creates target database."""
+
+    @abc.abstractmethod
+    @asyncio.coroutine
+    def get_replication_log(self, docid: str) -> dict:
+        """Returns Replication log document instance by given ID. If document
+        couldn't be found, empty dict should be returned.
+
+        :param str docid: Document ID
+
+        :rtype: dict
+        """
