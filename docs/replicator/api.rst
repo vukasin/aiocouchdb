@@ -13,6 +13,9 @@ Replicator
 .. autoclass:: aiocouchdb.replicator.replication.Replication
   :members:
 
+.. autoclass:: aiocouchdb.replicator.queues.BatchQueue
+  :members:
+
 Records
 =======
 
