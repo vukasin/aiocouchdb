@@ -7,6 +7,7 @@
 # you should have received as part of this distribution.
 #
 
+import datetime
 from unittest.mock import Mock, MagicMock
 
 import asyncio
@@ -50,14 +51,14 @@ class ReplicationTestCase(utils.TestCase):
 
     def test_generate_replication_id_without_filter_function(self):
         yield from self.repl.generate_replication_id(
-            rep_task=self.repl.rep_task,
+            rep_task=self.repl.state.rep_task,
             source=self.source,
             rep_uuid='',
             protocol_version=3)
         self.assertTrue(self.source.get_filter_function_code.called)
 
     def test_generate_replication_id_with_filter_function(self):
-        rep_task = self.repl.rep_task._replace(filter='test/passed')
+        rep_task = self.repl.state.rep_task._replace(filter='test/passed')
         self.source.get_filter_function_code.return_value = self.future('test')
 
         yield from self.repl.generate_replication_id(
@@ -70,7 +71,7 @@ class ReplicationTestCase(utils.TestCase):
     def test_generate_replication_id_bad_version(self):
         with self.assertRaises(RuntimeError):
             yield from self.repl.generate_replication_id(
-                rep_task=self.repl.rep_task,
+                rep_task=self.repl.state.rep_task,
                 source=self.source,
                 rep_uuid='',
                 protocol_version=10)
@@ -160,7 +161,7 @@ class ReplicationTestCase(utils.TestCase):
         changes_reader = asyncio.async(self.repl.changes_reader_loop(
             changes_queue=changes_queue,
             source=self.source,
-            rep_task=self.repl.rep_task,
+            rep_task=self.repl.state.rep_task,
             start_seq=21))
 
         yield from asyncio.sleep(0.1)  # context switch
@@ -221,8 +222,7 @@ class ReplicationTestCase(utils.TestCase):
         yield from asyncio.sleep(1)
 
         self.assertTrue(self.repl.do_checkpoint.called)
-
-        self.assertEqual(2, self.repl.do_checkpoint.call_args[0][2])
+        self.assertEqual(2, self.repl.do_checkpoint.call_args[1]['seq'])
 
     def test_checkpoints_loop_do_the_last_checkpoint_on_close_if_possible(self):
         reports_queue = work_queue.WorkQueue()
@@ -237,39 +237,37 @@ class ReplicationTestCase(utils.TestCase):
 
         yield from asyncio.sleep(0.01)
 
-        self.assertEqual(2, self.repl.do_checkpoint.call_args[0][2])
+        self.assertTrue(self.repl.do_checkpoint.called)
+        self.assertEqual(2, self.repl.do_checkpoint.call_args[1]['seq'])
 
     def test_ensure_full_commit(self):
-        self.source.ensure_full_commit.return_value = self.future(42)
-        self.target.ensure_full_commit.return_value = self.future(42)
+        self.source.ensure_full_commit.return_value = self.future('42')
+        self.target.ensure_full_commit.return_value = self.future('42')
 
-        yield from self.repl.ensure_full_commit(
-            self.source, {'instance_start_time': 42},
-            self.target, {'instance_start_time': 42})
+        yield from self.repl.ensure_full_commit(self.source, '42',
+                                                self.target, '42')
 
         self.assertTrue(self.source.ensure_full_commit.called)
         self.assertTrue(self.target.ensure_full_commit.called)
 
     def test_ensure_full_commit_source_start_time_out_of_sync(self):
-        self.source.ensure_full_commit.return_value = self.future(24)
-        self.target.ensure_full_commit.return_value = self.future(42)
+        self.source.ensure_full_commit.return_value = self.future('24')
+        self.target.ensure_full_commit.return_value = self.future('42')
 
         with self.assertRaises(RuntimeError):
-            yield from self.repl.ensure_full_commit(
-                self.source, {'instance_start_time': 42},
-                self.target, {'instance_start_time': 42})
+            yield from self.repl.ensure_full_commit(self.source, '42',
+                                                    self.target, '42')
 
         self.assertTrue(self.source.ensure_full_commit.called)
         self.assertTrue(self.target.ensure_full_commit.called)
 
     def test_ensure_full_commit_target_start_time_out_of_sync(self):
-        self.source.ensure_full_commit.return_value = self.future(42)
-        self.target.ensure_full_commit.return_value = self.future(24)
+        self.source.ensure_full_commit.return_value = self.future('42')
+        self.target.ensure_full_commit.return_value = self.future('24')
 
         with self.assertRaises(RuntimeError):
-            yield from self.repl.ensure_full_commit(
-                self.source, {'instance_start_time': 42},
-                self.target, {'instance_start_time': 42})
+            yield from self.repl.ensure_full_commit(self.source, '42',
+                                                    self.target, '42')
 
         self.assertTrue(self.source.ensure_full_commit.called)
         self.assertTrue(self.target.ensure_full_commit.called)
@@ -277,43 +275,39 @@ class ReplicationTestCase(utils.TestCase):
     def test_record_checkpoint(self):
         self.source.update_replication_log.return_value = self.future('1-abc')
         self.target.update_replication_log.return_value = self.future('1-cde')
-        history = []
-        source_log = {}
-        target_log = {}
+        rep_state = self.repl.state.update(
+            history=tuple(),
+            rep_id='rep_id',
+            session_id='ssid',
+            source_log_rev='0-',
+            target_log_rev='0-',
+            replication_start_time=datetime.datetime.now(),
+        )
 
-        committed_seq = yield from self.repl.record_checkpoint(
-            'rep_id', 'ssid', 42, self.source, source_log,
-            self.target, target_log, history)
+        rep_state = yield from self.repl.record_checkpoint(
+            self.source, self.target, 42, rep_state)
 
-        self.assertEqual(1, len(history))
-        self.assertEqual('ssid', history[0]['session_id'])
-        self.assertEqual(42, history[0]['recorded_seq'])
-        self.assertEqual(42, committed_seq)
-
-        self.assertEqual(history, source_log['history'])
-        self.assertEqual(history, target_log['history'])
+        self.assertEqual(1, len(rep_state.history))
+        self.assertEqual('ssid', rep_state.history[0]['session_id'])
+        self.assertEqual(42, rep_state.history[0]['recorded_seq'])
+        self.assertEqual(42, rep_state.committed_seq)
 
         self.assertTrue(self.source.update_replication_log.called)
         self.assertTrue(self.target.update_replication_log.called)
 
-        self.assertEqual('1-abc', source_log['_rev'])
-        self.assertEqual('1-cde', target_log['_rev'])
+        self.assertEqual('1-abc', rep_state.source_log_rev)
+        self.assertEqual('1-cde', rep_state.target_log_rev)
 
     def new_checkpoints_loop(self,
                              reports_queue, *,
                              checkpoint_interval=5,
                              use_checkpoints=True):
+        committed_seq = self.repl.lowest_seq
         return self.repl.checkpoints_loop(
-            reports_queue=reports_queue,
+            reports_queue,
             checkpoint_interval=checkpoint_interval,
             use_checkpoints=use_checkpoints,
             # these are irrelevant
-            rep_id=None,
-            session_id=None,
+            rep_state=self.repl.state.update(committed_seq=committed_seq),
             source=None,
-            target=None,
-            source_info=None,
-            target_info=None,
-            source_log=None,
-            target_log=None,
-            history=None)
+            target=None)

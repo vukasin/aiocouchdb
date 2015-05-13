@@ -91,11 +91,15 @@ class ISourcePeer(object, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     @asyncio.coroutine
-    def update_replication_log(self, rep_id: str, doc: dict) -> str:
+    def update_replication_log(self,
+                               rep_id: str,
+                               doc: dict, *,
+                               rev: str=None) -> str:
         """Updates a document and returns new MVCC revision value back.
 
         :param str rep_id: Replication ID
         :param dict doc: Replication Log document
+        :param str rev: Document revision
 
         :rtype: str
         """
@@ -167,11 +171,15 @@ class ITargetPeer(object, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     @asyncio.coroutine
-    def update_replication_log(self, rep_id: str, doc: dict) -> str:
+    def update_replication_log(self,
+                               rep_id: str,
+                               doc: dict, *,
+                               rev: str=None) -> str:
         """Updates a document and returns new MVCC revision value back.
 
         :param str rep_id: Replication ID
         :param dict doc: Replication Log document
+        :param str rev: Document revision
 
         :rtype: str
         """

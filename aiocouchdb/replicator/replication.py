@@ -10,10 +10,12 @@
 
 import asyncio
 import bisect
+import datetime
+import functools
 import uuid
 
 from .abc import ISourcePeer, ITargetPeer
-from .records import ReplicationTask
+from .records import ReplicationTask, ReplicationState
 from .work_queue import WorkQueue
 from . import utils
 
@@ -38,11 +40,13 @@ class Replication(object):
                  source_peer_class,
                  target_peer_class, *,
                  protocol_version=3):
-        self.rep_uuid = rep_uuid
-        self.rep_task = rep_task
-        self.protocol_version = protocol_version
         self.source = source_peer_class(rep_task.source)
         self.target = target_peer_class(rep_task.target)
+        self.state = ReplicationState(
+            rep_task,
+            rep_uuid=rep_uuid,
+            protocol_version=protocol_version
+        )
 
     @asyncio.coroutine
     def changes_reader_loop(self,
@@ -67,31 +71,21 @@ class Replication(object):
 
     @asyncio.coroutine
     def checkpoints_loop(self,
-                         rep_id: str,
                          reports_queue: WorkQueue,
-                         session_id: str,
                          source: ISourcePeer,
                          target: ITargetPeer,
-                         source_info: dict,
-                         target_info: dict,
-                         source_log: dict,
-                         target_log: dict,
-                         history: list, *,
+                         rep_state: ReplicationState,
                          use_checkpoints: bool=True,
                          checkpoint_interval: int=default_checkpoint_interval):
-        def proxy_do_checkpoint(seq):
-            # proxy function to reduce things duplication
-            return self.do_checkpoint(
-                rep_id, session_id, seq,
-                source, source_info, source_log,
-                target, target_info, target_log,
-                history)
 
-        committed_seq = self.lowest_seq
-        current_thought_seq = self.lowest_seq
-        highest_seq_done = self.lowest_seq
+        current_through_seq = rep_state.committed_seq
+        highest_seq_done = rep_state.committed_seq
         seqs_in_progress = []  # we need ordset here
 
+        do_checkpoint = functools.partial(self.do_checkpoint,
+                                          rep_state=rep_state,
+                                          source=source,
+                                          target=target)
         timer = asyncio.async(asyncio.sleep(checkpoint_interval))
 
         # local optimization: gather all the reports from queue
@@ -99,6 +93,12 @@ class Replication(object):
         # all the available reports with single call.
         get_reports = asyncio.async(reports_queue.get_all())
         while True:
+            self.state = rep_state = rep_state.update(
+                current_through_seq=current_through_seq,
+                highest_seq_done=highest_seq_done,
+                seqs_in_progress=frozenset(seqs_in_progress)
+            )
+
             # timer and reports awaiter should be run concurrently and do not
             # block each other.
             yield from asyncio.wait([timer, get_reports],
@@ -125,7 +125,7 @@ class Replication(object):
                             # dummy branch, see below
                             pass
                         elif seqs_in_progress[0] == report_seq:
-                            current_thought_seq = seqs_in_progress.pop(0)
+                            current_through_seq = seqs_in_progress.pop(0)
                         else:
                             seqs_in_progress.pop(bisect.bisect_left(
                                 seqs_in_progress, report_seq))
@@ -133,7 +133,7 @@ class Replication(object):
                         if not seqs_in_progress:
                             # No more seqs in progress, make sure that we make
                             # checkpoint with the highest seq that done
-                            current_thought_seq = max(current_thought_seq,
+                            current_through_seq = max(current_through_seq,
                                                       highest_seq_done)
 
                     else:
@@ -151,34 +151,35 @@ class Replication(object):
                     # We don't use checkpoints. Could we not use timer as well?
                     continue
 
-                if committed_seq == current_thought_seq:
+                if rep_state.committed_seq == current_through_seq:
                     # Nothing was changed, no need to make a checkpoint.
                     continue
 
-                committed_seq = yield from proxy_do_checkpoint(
-                    current_thought_seq)
+                self.state = rep_state = yield from do_checkpoint(
+                    seq=current_through_seq)
 
         # We are going to do the last checkpoint while having some sequences
         # in progress. What's wrong?
         assert not seqs_in_progress, seqs_in_progress
 
-        if committed_seq != highest_seq_done:
+        if rep_state.committed_seq != highest_seq_done:
             # Do the last checkpoint
-            committed_seq = yield from proxy_do_checkpoint(highest_seq_done)
+            self.state = rep_state = yield from do_checkpoint(
+                seq=highest_seq_done)
 
     @asyncio.coroutine
     def start(self):
         """Starts a replication."""
         # couch_replicator:do_init/1
         # couch_replicator:init_state/1
-        rep_task, source, target = self.rep_task, self.source, self.target
+        rep_task, source, target = self.state.rep_task, self.source, self.target
 
         # we'll need source and target info later
         source_info, target_info = yield from self.verify_peers(
             source, target, rep_task.create_target)
 
         rep_id = yield from self.generate_replication_id(
-            rep_task, source, self.rep_uuid, self.protocol_version)
+            rep_task, source, self.state.rep_uuid, self.state.protocol_version)
 
         source_log, target_log = yield from self.find_replication_logs(
             rep_id, source, target)
@@ -200,17 +201,33 @@ class Replication(object):
         changes_reader_task = asyncio.async(self.changes_reader_loop(
             changes_queue, source, rep_task, start_seq))
 
-        session_id = uuid.uuid4().hex
+        self.state = state = self.state.update(
+            rep_id=rep_id,
+            session_id=uuid.uuid4().hex,
+
+            source_seq=source_info['update_seq'],
+            start_seq=start_seq,
+            committed_seq=start_seq,
+            current_through_seq=start_seq,
+            highest_seq_done=start_seq,
+            seqs_in_progress=tuple(),
+
+            replication_start_time=datetime.datetime.utcnow(),
+            source_start_time=source_info['instance_start_time'],
+            target_start_time=target_info['instance_start_time'],
+
+            source_log_rev=source_log.get('_rev'),
+            target_log_rev=target_log.get('_rev'),
+            history=tuple(history),
+        )
+
         reports_queue = WorkQueue()
         if rep_task.checkpoint_interval:
             checkpoint_interval = rep_task.checkpoint_interval
         else:
             checkpoint_interval = self.default_checkpoint_interval
         checkpoints_loop_task = asyncio.async(self.checkpoints_loop(
-            # TODO use rep_state
-            rep_id, reports_queue, session_id,
-            source, source_info, source_log,
-            target, target_info,  target_log, history,
+            reports_queue, source, target, state,
             use_checkpoints=rep_task.use_checkpoints,
             checkpoint_interval=checkpoint_interval))
 
@@ -313,83 +330,92 @@ class Replication(object):
 
     @asyncio.coroutine
     def do_checkpoint(self,
-                      rep_id: str,
-                      session_id: str,
+                      rep_state: ReplicationState,
                       seq,
                       source: ISourcePeer,
-                      source_info: dict,
-                      source_log: dict,
-                      target: ITargetPeer,
-                      target_info: dict,
-                      target_log: dict,
-                      history: list):
+                      target: ITargetPeer):
         # couch_replicator:do_checkpoint/1
 
-        yield from self.ensure_full_commit(source, source_info,
-                                           target, target_info)
-        return (yield from self.record_checkpoint(rep_id, session_id, seq,
-                                                  source, source_log,
-                                                  target, target_log,
-                                                  history))
+        yield from self.ensure_full_commit(source, rep_state.source_start_time,
+                                           target, rep_state.target_start_time)
+        return (yield from self.record_checkpoint(source, target,
+                                                  seq, rep_state))
 
     @asyncio.coroutine
     def ensure_full_commit(self,
                            source: ISourcePeer,
-                           source_info: dict,
+                           source_start_time: str,
                            target: ITargetPeer,
-                           target_info: dict):
+                           target_start_time: str):
         """Ask Source and Target peers to ensure that all changes that made
         are flushed on disk or other persistent storage.
 
         Terminates a Replication if Source or Target changed their start time
         value."""
         # Why we need to ensure_full_commit on source? Only just for start time?
-        source_start_time = yield from source.ensure_full_commit()
-        target_start_time = yield from target.ensure_full_commit()
+        source_start_time_2 = yield from source.ensure_full_commit()
+        target_start_time_2 = yield from target.ensure_full_commit()
 
-        if source_start_time != source_info['instance_start_time']:
+        if source_start_time != source_start_time_2:
             raise RuntimeError('source start time was changed')
 
-        if target_start_time != target_info['instance_start_time']:
+        if target_start_time != target_start_time_2:
             raise RuntimeError('target start time was changed')
 
     @asyncio.coroutine
     def record_checkpoint(self,
-                          rep_id: str,
-                          session_id: str,
-                          seq,
                           source: ISourcePeer,
-                          source_log: dict,
                           target: ITargetPeer,
-                          target_log: dict,
-                          history: list):
+                          seq,
+                          rep_state: ReplicationState):
         """Records Checkpoint on the both Peers and returns recorded sequence
         back."""
 
-        new_history = ([self.new_history_entry(session_id, seq)]
-                       + history[:self.max_history_entries - 1])
-
-        source_log['history'] = new_history
-        target_log['history'] = new_history
+        source_log = self.new_replication_log(rep_state, seq)
+        target_log = self.new_replication_log(rep_state, seq)
 
         source_rev = yield from source.update_replication_log(
-            rep_id, source_log)
+            rep_state.rep_id, source_log, rev=rep_state.source_log_rev)
         target_rev = yield from target.update_replication_log(
-            rep_id, target_log)
+            rep_state.rep_id, target_log, rev=rep_state.target_log_rev)
 
-        # TODO: get rid dependency on mutable things
-        source_log['_rev'] = source_rev
-        target_log['_rev'] = target_rev
-        history[:] = new_history
+        return rep_state.update(
+            committed_seq=seq,
+            history=source_log['history'],
+            last_checkpoint_made_time=datetime.datetime.utcnow(),
+            source_log_rev=source_rev,
+            target_log_rev=target_rev
+        )
 
-        return seq
+    def new_replication_log(self, rep_state: ReplicationState, seq) -> dict:
+        prev_history = rep_state.history[:self.max_history_entries - 1]
+        return {
+            'history': (self.new_history_entry(rep_state, seq),) + prev_history,
+            'replication_id_version': rep_state.protocol_version,
+            'session_id': rep_state.session_id,
+            'source_last_seq': seq
+        }
 
-    def new_history_entry(self, session_id: str, recorded_seq) -> dict:
+    def new_history_entry(self, rep_state: ReplicationState, seq) -> dict:
         """Returns a new replication history entry suitable to be added to
         replication log."""
-        # TODO: add more fields according CouchDB structure
-        # but these ones are required.
         return {
-            'session_id': session_id,
-            'recorded_seq': recorded_seq,
+            # required
+            'session_id': rep_state.session_id,
+            'recorded_seq': seq,
+            # misc
+            'start_time': self.format_time(rep_state.replication_start_time),
+            'end_time': self.format_time(datetime.datetime.utcnow()),
+            'start_last_seq': rep_state.committed_seq,
+            'end_last_seq': seq,
+            # TODO: add stats
         }
+
+    def format_time(self, utcdt: datetime.datetime) -> str:
+        """Formats a time into RFC 1123 with GMT tz."""
+        weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+        months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep',
+                  'Oct', 'Nov', 'Dec']
+        return '{weekday}, {dt:%d} {month} {dt:%Y %H:%M:%S} GMT'.format(
+            weekday=weekdays[utcdt.weekday()], month=months[utcdt.month - 1],
+            dt=utcdt)
