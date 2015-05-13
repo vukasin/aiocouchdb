@@ -59,6 +59,15 @@ class ISourcePeer(object, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     @asyncio.coroutine
+    def ensure_full_commit(self) -> str:
+        """Ensures that all changes are flushed on disk. Returns an instance
+        start time.
+
+        :rtype: str
+        """
+
+    @abc.abstractmethod
+    @asyncio.coroutine
     def get_filter_function_code(self, filter_name: str) -> str:
         """Returns filter function code that would be applied on changes feed.
 
@@ -78,6 +87,17 @@ class ISourcePeer(object, metaclass=abc.ABCMeta):
         :param str docid: Replication ID
 
         :rtype: dict
+        """
+
+    @abc.abstractmethod
+    @asyncio.coroutine
+    def update_replication_log(self, rep_id: str, doc: dict) -> str:
+        """Updates a document and returns new MVCC revision value back.
+
+        :param str rep_id: Replication ID
+        :param dict doc: Replication Log document
+
+        :rtype: str
         """
 
     @abc.abstractmethod
@@ -127,6 +147,15 @@ class ITargetPeer(object, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     @asyncio.coroutine
+    def ensure_full_commit(self) -> str:
+        """Ensures that all changes are flushed on disk. Returns an instance
+        start time.
+
+        :rtype: str
+        """
+
+    @abc.abstractmethod
+    @asyncio.coroutine
     def get_replication_log(self, docid: str) -> dict:
         """Returns Replication log document instance by given ID. If document
         couldn't be found, empty dict should be returned.
@@ -134,4 +163,15 @@ class ITargetPeer(object, metaclass=abc.ABCMeta):
         :param str docid: Document ID
 
         :rtype: dict
+        """
+
+    @abc.abstractmethod
+    @asyncio.coroutine
+    def update_replication_log(self, rep_id: str, doc: dict) -> str:
+        """Updates a document and returns new MVCC revision value back.
+
+        :param str rep_id: Replication ID
+        :param dict doc: Replication Log document
+
+        :rtype: str
         """
