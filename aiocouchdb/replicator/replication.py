@@ -17,6 +17,7 @@ import uuid
 from .abc import ISourcePeer, ITargetPeer
 from .records import ReplicationTask, ReplicationState
 from .work_queue import WorkQueue
+from .worker import ReplicationWorker
 from . import utils
 
 
@@ -29,10 +30,10 @@ class Replication(object):
     """Replication job maker."""
 
     default_checkpoint_interval = 5  # seconds
-    default_worker_batch_size = 100
     default_worker_processes = 4
     lowest_seq = 0
     max_history_entries = 50
+    worker_class = ReplicationWorker
 
     def __init__(self,
                  rep_uuid: str,
@@ -190,7 +191,7 @@ class Replication(object):
         num_workers = (rep_task.worker_processes
                        or self.default_worker_processes)
         batch_size = (rep_task.worker_batch_size
-                      or self.default_worker_batch_size)
+                      or self.worker_class.default_batch_size)
         max_items = num_workers * batch_size * 2
 
         # we don't support changes queue limitation by byte size while we relay
@@ -230,6 +231,16 @@ class Replication(object):
             reports_queue, source, target, state,
             use_checkpoints=rep_task.use_checkpoints,
             checkpoint_interval=checkpoint_interval))
+
+        workers = [
+            self.worker_class(source, target, changes_queue, reports_queue,
+                              batch_size=batch_size,
+                              max_conns=rep_task.http_connections)
+            for _ in range(num_workers)
+        ]
+
+        for worker in workers:
+            worker.start()
 
         raise NotImplementedError
 

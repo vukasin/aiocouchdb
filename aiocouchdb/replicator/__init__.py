@@ -12,3 +12,4 @@ from .abc import ISourcePeer, ITargetPeer
 from .records import PeerInfo, ReplicationTask
 from .replication import Replication
 from .replicator import Replicator
+from .worker import ReplicationWorker
