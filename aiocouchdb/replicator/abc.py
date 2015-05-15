@@ -160,6 +160,18 @@ class ITargetPeer(object, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     @asyncio.coroutine
+    def revs_diff(self, idrevs: dict) -> dict:
+        """Compares given document id to list of revisions mapping with
+        the stored data and returns back same mapping with the revisions that
+        are missed on the peer side.
+
+        :param dict idrevs: Mapping between document id and list of revisions
+
+        :rtype dict:
+        """
+
+    @abc.abstractmethod
+    @asyncio.coroutine
     def get_replication_log(self, docid: str) -> dict:
         """Returns Replication log document instance by given ID. If document
         couldn't be found, empty dict should be returned.

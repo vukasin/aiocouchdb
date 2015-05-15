@@ -9,6 +9,9 @@
 
 import asyncio
 
+from itertools import groupby
+from operator import itemgetter
+
 from .abc import ISourcePeer, ITargetPeer
 from .work_queue import WorkQueue
 
@@ -53,13 +56,14 @@ class ReplicationWorker(object):
     def start(self):
         """Starts Replication worker."""
         return asyncio.async(self.changes_fetch_loop(
-            self.changes_queue, self.reports_queue, batch_size=self.batch_size
-        ))
+            self.changes_queue, self.reports_queue, self.target,
+            batch_size=self.batch_size))
 
     @asyncio.coroutine
     def changes_fetch_loop(self,
                            changes_queue: WorkQueue,
-                           reports_queue: WorkQueue, *,
+                           reports_queue: WorkQueue,
+                           target: ITargetPeer, *,
                            batch_size: int):
         # couch_replicator_worker:queue_fetch_loop/5
         while True:
@@ -69,6 +73,33 @@ class ReplicationWorker(object):
                 break
 
             # Ensure that we report about the highest seq in the batch
-            report_seq = sorted(changes, key=lambda i: i['seq'])[-1]['seq']
+            report_seq = sorted(changes, key=itemgetter('seq'))[-1]['seq']
             # Notify checkpoints_loop that we start work on the batch
             yield from reports_queue.put((False, report_seq))
+
+            idrevs = yield from self.find_missing_revs(target, changes)
+            if not idrevs:
+                # No difference were found, report about and move on
+                yield from reports_queue.put((True, report_seq))
+                continue
+
+    @asyncio.coroutine
+    def find_missing_revs(self, target: ITargetPeer, changes: list) -> dict:
+        # couch_replicator_worker:find_missing/2
+        # Unlike couch_replicator we also remove duplicate revs from diff
+        # request which may eventually when the same document with the conflicts
+        # had updated multiple times within the same batch slice.
+        by_id = itemgetter('id')
+        seen = set()
+        seen_add = seen.add
+        revs_diff = yield from target.revs_diff({
+            docid: [change['rev']
+                    for event in events
+                    for change in event['changes']
+                    if (docid, change['rev']) not in seen
+                    and (seen_add((docid, change['rev'])) or True)]
+            for docid, events in groupby(sorted(changes, key=by_id), key=by_id)
+        })
+        return {docid: (content['missing'],
+                        content.get('possible_ancestors', []))
+                for docid, content in revs_diff.items()}
