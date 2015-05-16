@@ -50,6 +50,61 @@ class Replication(object):
         )
 
     @asyncio.coroutine
+    def main_loop(self,
+                  changes_reader_loop_task: asyncio.Task,
+                  checkpoints_loop_task: asyncio.Task,
+                  reports_queue: WorkQueue,
+                  workers_tasks: list) -> ReplicationState:
+        # Basically implementation of
+        # couch_replicator:handle_info({'EXIT', Pid, _}, State)
+        # monitor all the subtasks for their exit status and terminate
+        # replication if things goes wrong
+
+        pending = [changes_reader_loop_task,
+                   checkpoints_loop_task] + workers_tasks
+        workers_tasks_set = set(workers_tasks)
+        while True:
+            done, pending = yield from asyncio.wait(
+                pending, return_when=asyncio.FIRST_COMPLETED)
+
+            if changes_reader_loop_task.done():
+                if changes_reader_loop_task.exception():
+                    # Changes reader died, that's a critical situation.
+                    for task in pending:
+                        task.cancel()
+                    raise changes_reader_loop_task.exception()
+
+            if checkpoints_loop_task.done():
+                # Checkpoint loop should not be done here.
+                for task in pending:
+                    task.cancel()
+                if checkpoints_loop_task.exception():
+                    raise checkpoints_loop_task.exception()
+                else:
+                    raise RuntimeError('checkpoint loop unexpectedly stopped')
+
+            for worker in workers_tasks:
+                if worker in done:
+                    if worker.exception():
+                        # Could we check if it still possible to make
+                        # a checkpoint before completely crash?
+                        for task in pending:
+                            task.cancel()
+                        raise worker.exception()
+
+            if not (workers_tasks_set & pending):
+                # All done, ask to do the last checkpoint
+                reports_queue.close()
+                break
+
+        assert changes_reader_loop_task.done(), \
+            'Why changes reader is still active when all workers are done?'
+
+        # Waiting for the last checkpoint
+        yield from checkpoints_loop_task
+        return self.state
+
+    @asyncio.coroutine
     def changes_reader_loop(self,
                             changes_queue: WorkQueue,
                             source: ISourcePeer,
@@ -239,10 +294,13 @@ class Replication(object):
             for _ in range(num_workers)
         ]
 
-        for worker in workers:
-            worker.start()
+        workers_tasks = [worker.start() for worker in workers]
 
-        raise NotImplementedError
+        return asyncio.async(self.main_loop(
+            changes_reader_task,
+            checkpoints_loop_task,
+            reports_queue,
+            workers_tasks))
 
     @asyncio.coroutine
     def verify_peers(self, source: ISourcePeer, target: ITargetPeer,
