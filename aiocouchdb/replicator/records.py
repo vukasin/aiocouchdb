@@ -17,10 +17,16 @@ from . import utils
 
 
 __all__ = (
+    'TsSeq',
     'PeerInfo',
     'ReplicationTask',
     'ReplicationState',
 )
+
+
+class TsSeq(namedtuple('TsSeq', ['ts', 'id'])):
+    """Timestamped (actually not) Sequence ID."""
+    __slots__ = ()
 
 
 class PeerInfo(namedtuple('Peer', ['url', 'headers', 'auth'])):
@@ -243,11 +249,11 @@ class ReplicationState(namedtuple('ReplicationState', [
                 protocol_version: int=None,
                 session_id: str=None,
 
-                source_seq=None,
-                start_seq=None,
-                committed_seq=None,
-                current_through_seq=None,
-                highest_seq_done=None,
+                source_seq: TsSeq=None,
+                start_seq: TsSeq=None,
+                committed_seq: TsSeq=None,
+                current_through_seq: TsSeq=None,
+                highest_seq_done: TsSeq=None,
                 seqs_in_progress: frozenset=None,
 
                 replication_start_time: float=None,

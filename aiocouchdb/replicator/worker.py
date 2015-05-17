@@ -75,13 +75,15 @@ class ReplicationWorker(object):
                            max_conns: int):
         # couch_replicator_worker:queue_fetch_loop/5
         while True:
-            changes = yield from changes_queue.get(batch_size)
+            seqs_changes = yield from changes_queue.get(batch_size)
 
-            if changes is changes_queue.CLOSED:
+            if seqs_changes is changes_queue.CLOSED:
                 break
 
             # Ensure that we report about the highest seq in the batch
-            report_seq = sorted(changes, key=itemgetter('seq'))[-1]['seq']
+            seqs, changes = zip(*sorted(seqs_changes))
+            report_seq = seqs[-1]
+
             # Notify checkpoints_loop that we start work on the batch
             yield from reports_queue.put((False, report_seq))
 

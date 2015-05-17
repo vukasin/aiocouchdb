@@ -12,10 +12,11 @@ import asyncio
 import bisect
 import datetime
 import functools
+import itertools
 import uuid
 
 from .abc import ISourcePeer, ITargetPeer
-from .records import ReplicationTask, ReplicationState
+from .records import ReplicationTask, ReplicationState, TsSeq
 from .work_queue import WorkQueue
 from .worker import ReplicationWorker
 from . import utils
@@ -110,16 +111,25 @@ class Replication(object):
                             reports_queue: WorkQueue,
                             source: ISourcePeer,
                             rep_task: ReplicationTask,
-                            start_seq):
+                            start_seq: TsSeq):
         # couch_replicator_changes_reader
+
         feed = yield from source.changes(
             continuous=rep_task.continuous,
             doc_ids=rep_task.doc_ids,
             filter=rep_task.filter,
             query_params=rep_task.query_params,
-            since=start_seq,
+            since=start_seq.id,
             view=rep_task.view)
-        while True:
+        # couch_replicator uses couch_replication:changes_manager_loop_open/4
+        # to mark requested _batches_ with ordered numbers. Here we use
+        # different approach to avoid having own changes_manager_loop (once
+        # there was the one) as it makes solution more complicated by marking
+        # all changes.
+        #
+        # Counter starts with greater than start_seq TS value in order to avoid
+        # comparison default lowest seq value with the first received one.
+        for ts in itertools.count(start_seq.ts + 1):
             event = yield from feed.next()
             if event is None:
                 # Report that feed.last_seq is done regardless if it is actually
@@ -129,10 +139,17 @@ class Replication(object):
                 # workers may not proceed the last seq, but we actually read
                 # until it. No need read it and seqs before it again when we
                 # restart the same replication.
-                yield from reports_queue.put((True, feed.last_seq))
+                #
+                # couch_replicator_changes_reader uses own TS counter  for
+                # the last_seq which always lower than those what reported by
+                # workers. Not sure if it's bug or not.
+                yield from reports_queue.put((True, TsSeq(ts, feed.last_seq)))
                 changes_queue.close()
                 break
-            yield from changes_queue.put(event)
+            # We form TsSeq here in order to isolate workers from knowledge
+            # about TsSeq thing.
+            seq = TsSeq(ts, event['seq'])
+            yield from changes_queue.put((seq, event))
 
     @asyncio.coroutine
     def checkpoints_loop(self,
@@ -161,7 +178,7 @@ class Replication(object):
             self.state = rep_state = rep_state.update(
                 current_through_seq=current_through_seq,
                 highest_seq_done=highest_seq_done,
-                seqs_in_progress=frozenset(seqs_in_progress)
+                seqs_in_progress=tuple(seqs_in_progress)
             )
 
             # timer and reports awaiter should be run concurrently and do not
@@ -254,7 +271,7 @@ class Replication(object):
             rep_id, source, target)
         found_seq, history = self.compare_replication_logs(
             source_log, target_log)
-        start_seq = rep_task.since_seq or found_seq
+        start_seq = TsSeq(0, rep_task.since_seq or found_seq)
 
         num_workers = (rep_task.worker_processes
                        or self.default_worker_processes)
@@ -413,7 +430,7 @@ class Replication(object):
     @asyncio.coroutine
     def do_checkpoint(self,
                       rep_state: ReplicationState,
-                      seq,
+                      seq: TsSeq,
                       source: ISourcePeer,
                       target: ITargetPeer):
         # couch_replicator:do_checkpoint/1
@@ -448,7 +465,7 @@ class Replication(object):
     def record_checkpoint(self,
                           source: ISourcePeer,
                           target: ITargetPeer,
-                          seq,
+                          seq: TsSeq,
                           rep_state: ReplicationState):
         """Records Checkpoint on the both Peers and returns recorded sequence
         back."""
@@ -469,27 +486,31 @@ class Replication(object):
             target_log_rev=target_rev
         )
 
-    def new_replication_log(self, rep_state: ReplicationState, seq) -> dict:
+    def new_replication_log(self,
+                            rep_state: ReplicationState,
+                            seq: TsSeq) -> dict:
         prev_history = rep_state.history[:self.max_history_entries - 1]
         return {
             'history': (self.new_history_entry(rep_state, seq),) + prev_history,
             'replication_id_version': rep_state.protocol_version,
             'session_id': rep_state.session_id,
-            'source_last_seq': seq
+            'source_last_seq': seq.id
         }
 
-    def new_history_entry(self, rep_state: ReplicationState, seq) -> dict:
+    def new_history_entry(self,
+                          rep_state: ReplicationState,
+                          seq: TsSeq) -> dict:
         """Returns a new replication history entry suitable to be added to
         replication log."""
         return {
             # required
             'session_id': rep_state.session_id,
-            'recorded_seq': seq,
+            'recorded_seq': seq.id,
             # misc
             'start_time': self.format_time(rep_state.replication_start_time),
             'end_time': self.format_time(datetime.datetime.utcnow()),
-            'start_last_seq': rep_state.committed_seq,
-            'end_last_seq': seq,
+            'start_last_seq': rep_state.committed_seq.id,
+            'end_last_seq': seq.id,
             # TODO: add stats
         }
 
