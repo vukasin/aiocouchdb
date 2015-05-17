@@ -10,6 +10,8 @@
 import abc
 import asyncio
 
+from .records import PeerInfo
+
 
 class IChangesFeed(object, metaclass=abc.ABCMeta):
     """Changes feed reader."""
@@ -39,7 +41,10 @@ class IChangesFeed(object, metaclass=abc.ABCMeta):
 class ISourcePeer(object, metaclass=abc.ABCMeta):
     """Source peer interface."""
 
-    def __init__(self, peer_info):
+    def __init__(self, peer_info: PeerInfo, *,
+                 retries: int=None,
+                 socket_options=None,
+                 timeout: int=None):
         pass
 
     @abc.abstractmethod
@@ -146,7 +151,10 @@ class ISourcePeer(object, metaclass=abc.ABCMeta):
 class ITargetPeer(object, metaclass=abc.ABCMeta):
     """Target peer interface."""
 
-    def __init__(self, peer_info):
+    def __init__(self, peer_info: PeerInfo, *,
+                 retries: int=None,
+                 socket_options=None,
+                 timeout: int=None):
         pass
 
     @abc.abstractmethod
