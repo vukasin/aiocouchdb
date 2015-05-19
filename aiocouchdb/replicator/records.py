@@ -70,6 +70,7 @@ class PeerInfo(namedtuple('Peer', ['url', 'headers', 'auth'])):
 
 
 class ReplicationTask(namedtuple('ReplicationTask', [
+    # pylint: disable=C0330
     'source',
     'target',
     'repid',
@@ -97,7 +98,7 @@ class ReplicationTask(namedtuple('ReplicationTask', [
 
     __slots__ = ()
 
-    def __new__(cls, source, target, *,
+    def __new__(cls, source, target, *,  # pylint: disable=W0142, W0612, W0622
                 repid: str=None,
                 cancel: bool=None,
                 continuous: bool=None,
@@ -198,13 +199,14 @@ class ReplicationTask(namedtuple('ReplicationTask', [
     def __repr__(self):
         return '<{}.{}({})>'.format(
             self.__module__,
-            self.__class__.__qualname__,
+            self.__class__.__qualname__,  # pylint: disable=E1101
             ', '.join('='.join((key, str(value)))
                       for key, value in zip(self._fields, self)
                       if value is not None))
 
 
 class ReplicationState(namedtuple('ReplicationState', [
+    # pylint: disable=C0330
     'rep_task',
 
     'rep_id',
@@ -243,7 +245,7 @@ class ReplicationState(namedtuple('ReplicationState', [
 
     __slots__ = ()
 
-    def __new__(cls, rep_task: ReplicationTask, *,
+    def __new__(cls, rep_task: ReplicationTask, *,  # pylint: disable=W0142, W0612, W0622
                 rep_id: str=None,
                 rep_uuid: str=None,
                 protocol_version: int=None,
