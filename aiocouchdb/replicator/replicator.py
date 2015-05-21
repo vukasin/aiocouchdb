@@ -41,25 +41,28 @@ class Replicator(object):
         if replication_job_class is not None:
             self.replication_job_class = replication_job_class
         self.rep_uuid = rep_uuid or REPLICATOR_UUID
+        self.registry = {}
 
-    def __getitem__(self, repid):
-        raise NotImplementedError
+    def __getitem__(self, rep_id: str):
+        return self.registry[rep_id]
 
     @asyncio.coroutine
-    def start_replication(self, task: ReplicationTask, *,
+    def start_replication(self, rep_task: ReplicationTask, *,
                           source_peer_class=None,
-                          target_peer_class=None):
+                          target_peer_class=None) -> str:
         """Starts a new Replication process."""
 
         replication = self.replication_job_class(
-            task,
+            rep_task,
             source_peer_class or self.source_peer_class,
             target_peer_class or self.target_peer_class,
             rep_uuid=self.rep_uuid,
             protocol_version=self.protocol_version)
 
-        yield from replication.start()
+        task = yield from replication.start()
+        self.registry[replication.state.rep_id] = task
+        return replication.state.rep_id
 
     @asyncio.coroutine
-    def cancel_replication(self, repid):
-        raise NotImplementedError
+    def cancel_replication(self, rep_id: str):
+        self.registry[rep_id].cancel()
